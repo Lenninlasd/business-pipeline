@@ -1,0 +1,6 @@
+# Pipeline output contains personal phone numbers and must never be committed.
+output/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
