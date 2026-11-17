@@ -27,6 +27,13 @@ data folder ──1 Ingest──> posts ──2 Classify──> business posts �
 | 5 | Review: apply `decisions.tsv` | — | designed |
 | 6 | Publish: map to the directory schema | — | designed |
 
+Beside the steps:
+- **Schema discovery.** Facts the schema has no field for, such as payment methods or order lead
+  time, are collected. Step 4 lists them in `output/schema_suggestions.md`, and you decide in
+  `schema/fields.tsv` whether each one becomes a field.
+- **Eval.** `business_pipeline.eval run` scores extraction against a golden set you review.
+  Run it before changing the prompt or the model.
+
 A business needs a **name**, a **category** and a **contact number**. Products, hours, delivery
 and location are extracted when present. Incomplete businesses go to review, never to the bin.
 
@@ -71,6 +78,7 @@ Everything goes to `output/`, which git ignores:
 ```
 src/business_pipeline/   the pipeline (one module per step)
 src/outscraper_extract/  Google Maps extraction, independent (see below)
+schema/                  schema decisions (fields.tsv), directory snapshot, eval history: no data
 tests/                   unittest, synthetic data only
 SPEC.md                  pipeline spec
 CLAUDE.md                rules for AI agents working here

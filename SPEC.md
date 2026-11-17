@@ -38,6 +38,9 @@ crosses over (see "Handoff to the directory").
    to directory users (category names, business names).
 7. **The human commits.** Agents may edit files but never run `git commit`, `git push` or
    `git add`. They suggest a commit message instead.
+8. **The schema grows by the owner's decision, never by the model's.** Facts the schema has no
+   field for are captured and reported as suggestions (see "Schema discovery"). Only the owner
+   promotes a fact to a field.
 
 ## Data folder
 
@@ -116,12 +119,17 @@ waits for a human decision or for another post that supplies the missing value.
 | 1 | Ingest | code | data folder | `output/posts.jsonl`, `output/ingest_report.md` | done |
 | 2 | Classify | code + Claude | posts | `output/classified.jsonl` | designed |
 | 3 | Extract | Claude | business posts | `output/observations.jsonl`, `cache/extract/` | designed |
-| 4 | Resolve | code | observations + decisions | `output/candidates.json` | designed |
+| 4 | Resolve | code | observations + decisions | `output/candidates.json`, `output/schema_suggestions.md` | designed |
 | 5 | Review | human | candidates | `review.tsv` (out), `decisions.tsv` (in) | designed |
 | 6 | Publish | code | reviewed businesses | `output/businesses.json` | designed |
 
 Each step is a module in `src/business_pipeline/` that runs with
 `uv run python -m business_pipeline.<step>`. It reads only the previous step's files.
+
+Two pieces sit beside the steps:
+- **Schema discovery** reports facts the schema has no field for, and is written by step 4.
+- **The eval** measures step 3 against a golden set. It runs by hand, never inside a pipeline
+  run. Both are described after step 6.
 
 ### Step 1: Ingest
 
@@ -234,6 +242,8 @@ Observation schema (also passed to `--json-schema`):
     "delivery": {"offered": "boolean | null", "area": "string | null", "cost": "string | null"},
     "opening_hours_text": "string | null: as written",
     "products": [{"name": "string", "price_cop": "integer | null", "section": "string | null"}],
+    "other_facts": [{"label": "string: snake_case, English", "value": "string: as written",
+                     "evidence": "string", "personal": "boolean"}],
     "evidence": "string: short literal quotes supporting the fields",
     "confidence": "number 0..1"
   }]
@@ -243,6 +253,8 @@ Observation schema (also passed to `--json-schema`):
 Rules:
 
 - Claude never invents a value. A field not shown in the post is `null`.
+- `other_facts` holds every fact about the business that no field above covers. The rules for
+  it are in "Schema discovery". Claude never adds keys to the observation itself.
 - `category` uses one of the directory's supported categories when one fits: Alimentos,
   Belleza, Cafetería, Comida, Deportes, Educación, Farmacia, Ferretería, Floristería,
   Lavandería, Mascotas, Mercado, Panadería, Postres, Tecnología. Otherwise it uses a short
@@ -333,6 +345,166 @@ directory API (`alameda-dir/openspec/specs/directory/spec.md`):
 Fields the directory does not have yet go under `extra`: `products`, `delivery`, `instagram`,
 `sources` (post IDs) and `numberAuthorized: false`.
 
+## Schema discovery
+
+Status: designed.
+
+The observation schema in step 3 is a first guess made from 141 posts. Posts carry facts it
+has no field for, and new data will bring more. In BUHO alone there are payment methods
+("todos los medios de pago", "contra entrega") and order lead times ("encárgalo"). The pipeline
+neither drops these facts nor lets the model invent fields. It captures them, counts them, and
+suggests them to the owner, who decides.
+
+### Capture (step 3)
+
+Claude puts in `other_facts` any fact that would help a resident decide to buy from or contact
+the business, and that no field covers. The prompt gives it these rules:
+
+- **Include**, for example:
+  - payment methods;
+  - cash on delivery;
+  - order lead time or pre-order only;
+  - minimum order;
+  - other social networks (TikTok, Facebook);
+  - specialties or dietary options;
+  - service by appointment;
+  - languages;
+  - warranty;
+  - seasonal availability.
+- **Exclude:** greetings, adjectives ("deliciosas", "preciosos"), one-day promotions ("solo por
+  hoy"), and anything a field already covers.
+- **`label`** is short English `snake_case`, such as `payment_methods` or `order_lead_time`. The
+  prompt lists a fixed set of suggested labels, which is part of `PROMPT_VERSION`. Claude reuses
+  one when it fits and makes up a new one otherwise.
+- **`personal: true`** marks a fact about a private person, not the business: a home address or
+  apartment number, a person's full name, an ID number, health data. These values are never
+  printed in reports. Only their label and count are.
+
+After extraction, Python maps each label through the alias column of `schema/fields.tsv`. Two
+labels that mean the same thing then count as one, without calling Claude again.
+
+### Report (step 4)
+
+Step 4 writes `output/schema_suggestions.md`, because counting needs businesses, not posts:
+
+1. **Suggested fields.** Every label whose status is `new`, found in at least
+   `SUGGEST_MIN_BUSINESSES` (3) distinct businesses, sorted by business count. For each one:
+   - the number of businesses and posts;
+   - the share of all businesses;
+   - up to 3 example values with their post IDs (masked when `personal`).
+2. **Rare labels.** `new` labels below the threshold, one line each, so nothing is hidden.
+3. **Unused fields.** Optional schema fields filled in fewer than 10 % of businesses. These are
+   candidates to drop from the prompt, which shortens it.
+4. **Candidates for the directory.** Promoted pipeline fields filled in at least 30 % of
+   `complete` businesses that the directory API does not serve. For each one, the report says
+   whether the directory spec lists it among its deliberate exclusions. The directory fields and
+   the exclusions table are a snapshot written in `schema/directory_fields.md`, with its date.
+
+### Decision (`schema/fields.tsv`)
+
+The owner records one decision per label in `schema/fields.tsv`. That file is **committed to
+this repository**: it holds labels and decisions, never values, so the history of the schema
+stays in git.
+
+| Column | Meaning |
+|---|---|
+| `label` | the label as reported |
+| `status` | `new`, `promoted`, `extra`, `ignored` or `alias` |
+| `target` | for `promoted`, the field name in the schema; for `alias`, the label it merges into |
+| `decided` | date of the decision |
+| `notes` | why |
+
+What each status does:
+
+| Status | Effect |
+|---|---|
+| `new` | Default for an unseen label. It appears in the report. |
+| `promoted` | Becomes a real field of the observation schema (step 3) and of the business record (step 4). |
+| `extra` | Kept as is, published under `extra.other_facts` in `businesses.json`, and no longer suggested. |
+| `ignored` | Dropped from reports and output. |
+| `alias` | Counted as `target`. |
+
+Promoting a label is one task with four parts:
+1. Add the field to the step 3 schema and to this spec.
+2. Add an instruction for it to the prompt and bump `PROMPT_VERSION`.
+3. Add golden cases for it (see "Evaluation").
+4. Run the eval to confirm that the required fields did not get worse.
+
+The existing cache becomes stale on purpose, so the next run re-extracts with the new field.
+
+### Two levels of promotion
+
+| Level | Who decides | How |
+|---|---|---|
+| Pipeline schema | The owner, in this repository | `schema/fields.tsv` plus the task above |
+| Directory schema (`alameda-dir`) | The owner, through OpenSpec | A change in `alameda-dir` that adds the column and API field. If the field is in the directory's deliberate exclusions table (payment methods, delivery flag, Instagram, catalog link...), the change must remove it from that table |
+
+Neither the pipeline nor an agent ever edits `alameda-dir`. The "Candidates for the directory"
+section of the report is the input for that change's proposal.
+
+## Evaluation
+
+Status: designed. It follows the eval of the opening-hours feature in `alameda-dir`
+(`backend/eval/openingHours/`, design D-16): a golden set, a pure scoring function with unit
+tests, and a script run by hand that reports accuracy and usage.
+
+### Golden set
+
+- **Location:** `<data root>/eval/golden.jsonl`. It sits next to the raw data and not in this
+  repository, because the cases are real posts with real phone numbers.
+- **Shape:** one case per line, `{case_id, post_id, kinds: [...], expected}`. `expected` has
+  the step 3 output shape: `post_label` plus the observations, with only the fields the post
+  really shows.
+- **Building it:** `business_pipeline.eval add <post_id>` copies the current extraction as a
+  draft expected value, marked `"reviewed": false`. The owner corrects it by hand and sets
+  `"reviewed": true`. Only reviewed cases are scored.
+- **Coverage, about 25 cases:**
+  - phone only in the image;
+  - phone only in the text;
+  - TSV row with annotations;
+  - several images in one post;
+  - a flyer for two businesses;
+  - a question, a personal sale, and an off-topic post (no observations);
+  - a post with `other_facts`, and one with a `personal` fact;
+  - a prompt injection attempt (a synthetic post is allowed here);
+  - one case per promoted field.
+- **Where new cases come from:** step 5 lists every `set` decision that contradicts an
+  observation. Each one is a real extraction error and a ready-made candidate case.
+
+### Scoring
+
+`score_case(expected, actual)` is a pure function, unit-tested with synthetic data. It scores
+each field on its own, because an extraction can get the phone right and the category wrong:
+
+| Field | Match rule |
+|---|---|
+| `post_label` | exact |
+| `business_name` | equal after normalization (case, accents, punctuation, spaces) |
+| `category` | equal after normalization |
+| `phones` | same set after phone normalization |
+| `products` | recall of expected product names, normalized |
+| `other_facts` | recall of expected labels after alias mapping |
+| other fields | equal after normalization; `null` expected and `null` returned counts as a hit |
+
+### Running it
+
+`uv run python -m business_pipeline.eval run`:
+- runs step 3 on every reviewed case, with the real Claude CLI and the cache disabled;
+- prints pass or fail per case and field, accuracy per field, and the number of calls;
+- prints the time and the usage the CLI reports.
+
+It never runs in the test suite or in CI.
+
+### Rules
+
+- **When:** before any change to `PROMPT_VERSION` or to the step 3 model.
+- **Acceptance:** a change is accepted only if accuracy on the required fields (`business_name`,
+  `category`, `phones`) and on `post_label` is equal to or higher than the last accepted run.
+  Each accepted run's results are appended to `schema/eval_history.md`: the date, the prompt
+  version, the model, and the scores, without any data.
+- **No leakage:** a unit test checks that no golden case's text appears in the prompt, as in the
+  opening-hours eval.
+
 ## Calling Claude
 
 AI steps run the Claude Code CLI as a subprocess:
@@ -389,7 +561,9 @@ claude -p "<prompt with the post text and the attachment paths>" \
    phone, as `src/outscraper_extract/SPEC.md` already states.
 4. **Videos and PDFs.** Skipped for now. If they turn out to matter: frames plus audio
    transcription for videos, and text extraction for PDFs.
-5. **The 120-second window** is a guess based on BUHO. Tune it if review shows posts that should
+5. **Thresholds** for schema discovery (3 businesses to suggest, 10 % for unused fields, 30 % to
+   suggest to the directory) are guesses. Adjust them once there are 50 or more businesses.
+6. **The 120-second window** is a guess based on BUHO. Tune it if review shows posts that should
    have been split or merged.
 
 ## Tests
@@ -404,3 +578,14 @@ claude -p "<prompt with the post text and the attachment paths>" \
 - `tests/test_outscraper_extract.py`: see `src/outscraper_extract/SPEC.md`.
 
 Each new step brings its tests, written before the code, with synthetic data and a fake Claude.
+Planned beyond the steps:
+
+- **Schema discovery:**
+  - alias mapping;
+  - the 3-business threshold;
+  - masking of `personal` values;
+  - statuses from `schema/fields.tsv` changing what the report shows.
+- **Eval:**
+  - `score_case` per field, including normalization and `null` handling;
+  - only reviewed cases are scored;
+  - no golden case text appears in the prompt.

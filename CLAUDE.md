@@ -24,3 +24,10 @@ Business extraction pipeline for the Alameda del Río directory. Read before wor
   `git rebase`. When a task is done, report the files changed and the tests run, and suggest a
   commit message such as `[pipeline 2] Classify text-only posts`.
 - Ask before running a step that calls Claude on the whole data set. Pilot on a few posts first.
+- **Suggest schema changes, never make them on your own.**
+  - When data, reports or your own reading show a recurring fact the schema has no field
+    for, tell the owner. Name the label, count the businesses, and give one masked example.
+    Point to `output/schema_suggestions.md`.
+  - Change `schema/fields.tsv` or the observation schema only after the owner decides, and
+    follow the promotion task in SPEC.md ("Schema discovery").
+  - Never edit `alameda-dir`. Directory fields go through an OpenSpec change there.
