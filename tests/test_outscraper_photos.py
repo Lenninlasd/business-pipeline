@@ -127,6 +127,7 @@ class PromptTest(unittest.TestCase):
         self.assertIn("offering", prompt)
         self.assertIn("shelves", prompt)
         self.assertIn("decoration", prompt)
+        self.assertIn("Never infer a product, a service or a kind of customer from the people", prompt)
 
 
 class RecordTest(unittest.TestCase):
@@ -178,6 +179,19 @@ class RecordTest(unittest.TestCase):
         self.assertIsNone(record["as_of"])
         self.assertTrue(record["products"][0]["price_stale"])
         self.assertTrue(record["products"][0]["stale"])
+
+
+class LabelTest(unittest.TestCase):
+    def test_merges_synonyms_and_drops_low_value_labels(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        place = make_place(folder, ["2026-08-01"])
+        facts = [{"label": label, "value": "v", "evidence": "e", "photo": 1}
+                 for label in ("sign_business_name", "Business Name On Sign", "daily_promotions",
+                               "slogan", "payment_methods")]
+        result = answer(photos=[{"index": 1, "kind": "storefront", "has_text": True}], other_facts=facts)
+        record = build_record(place, photos_to_send(place), result, "k", TODAY)
+        self.assertEqual([f["label"] for f in record["other_facts"]],
+                         ["sign_name", "sign_name", "promotion", "payment_methods"])
 
 
 class AnalyzeTest(unittest.TestCase):

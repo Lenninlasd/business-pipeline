@@ -280,12 +280,22 @@ Each fact cites the number of the photo it comes from, in the prompt's order:
 | `other_facts[]` | `label` (snake_case, English), `value`, `evidence`, `photo`. Only what helps a customer: payment, promotions, services, parking, accessibility, a name on a sign that differs from Google's. Not decoration, furniture, mascots or mood. |
 | `evidence`, `confidence` | literal quotes; 0 to 1 |
 
+Python normalizes `other_facts` labels to snake_case and merges the synonyms Claude used for
+the same fact (`LABEL_SYNONYMS`: e.g. `sign_business_name` and `business_name_on_sign` become
+`sign_name`), and drops labels that do not help a customer (`slogan`). This runs on cached
+answers too, so changing the map needs no Claude call.
+
 Claude never invents a value, copies text in Spanish as written, and does not describe people.
+Products and services need a written name (menu, price list, sign, label or packaging). Nothing
+is inferred from the people in a photo: a child having a haircut does not mean "cortes para
+niños" unless it is written.
 
 ### Dates and staleness (Python, not Claude)
 
 `PROMPT_VERSION` 2 added `offering` and narrowed `other_facts`, after a pilot on 4 places
-where 16 photos held no menu or price list and the facts included decoration.
+where 16 photos held no menu or price list and the facts included decoration. Version 3
+stopped inferring services from people: v2 listed "cortes para niños" from a photo of a child
+having a haircut, with nothing written.
 
 Many photos are years old, so every fact gets its photo's `photo_file` and `photo_date`, and a
 `stale` flag by kind of fact:
@@ -322,6 +332,6 @@ covers date parsing, the score (full, empty, old, closed, the recency floor, the
 the newest review and photos, Street View photos, file extensions, skipping files already
 downloaded, and failed downloads. `tests/test_outscraper_photos.py` covers schema
 validation, reading the CLI's answer, the CLI command (Read only, no API key), which photos are
-sent, the prompt, dating and staleness, merging duplicate products, the cache, the retry and
-places without photos. The first two inject a fake HTTP client and the third a fake Claude, so
+sent, the prompt, dating and staleness, merging duplicate products, label normalization, the
+cache, the retry and places without photos. The first two inject a fake HTTP client and the third a fake Claude, so
 no test calls Outscraper or Claude.
