@@ -48,6 +48,25 @@ class ScoreTest(unittest.TestCase):
         self.assertGreater(recent, old)
         self.assertGreater(old, stale)
 
+    def test_recent_activity_sets_a_high_floor_whatever_the_profile(self) -> None:
+        bare = {"google_id": "g5", "name": "X", "business_status": "OPERATIONAL", "reviews": 1}
+        yesterday, signals = activity_score(bare, days_ago(1), False, None, NOW)
+        self.assertGreaterEqual(yesterday, 95)
+        self.assertIn("recent_review_7d", signals)
+        review_89, _ = activity_score(bare, days_ago(89), False, None, NOW)
+        photo_60, _ = activity_score(bare, None, False, days_ago(60), NOW)
+        self.assertGreaterEqual(review_89, 85)
+        self.assertGreaterEqual(photo_60, 80)
+        self.assertGreater(yesterday, review_89)
+        self.assertGreater(yesterday, photo_60)
+
+    def test_profile_breaks_ties_between_equally_recent_places(self) -> None:
+        bare = {"google_id": "g5", "name": "X", "business_status": "OPERATIONAL", "reviews": 1}
+        bare_score, _ = activity_score(bare, days_ago(20), False, None, NOW)
+        full_score, _ = activity_score(FULL, days_ago(20), False, None, NOW)
+        self.assertGreater(full_score, bare_score)
+        self.assertLessEqual(full_score, 100)
+
     def test_closed_permanently_is_0_and_temporarily_is_capped(self) -> None:
         closed = dict(FULL, business_status="CLOSED_PERMANENTLY")
         self.assertEqual(activity_score(closed, days_ago(5), True, days_ago(5), NOW), (0, ["closed_permanently"]))

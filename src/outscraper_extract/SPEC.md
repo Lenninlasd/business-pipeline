@@ -188,6 +188,22 @@ probability.
 | Has `website` | 3 |
 | Has at least one review | 2 |
 
+Recent activity is the strongest signal, so it also sets a floor. A review from yesterday
+proves the place was open yesterday, whatever its profile says; a review counts more than a
+photo. The score is the larger of the sum above and the floor plus a profile bonus (0-5 points,
+in proportion to the profile signals: every row except the review and photo dates).
+
+| Newest review at most | Floor | Newest photo at most | Floor |
+|---|---|---|---|
+| 7 days | 95 | 30 days | 85 |
+| 30 days | 90 | 90 days | 80 |
+| 90 days | 85 | 180 days | 65 |
+| 180 days | 70 | 365 days | 50 |
+| 365 days | 55 | | |
+
+The highest floor applies, and adds a signal such as `recent_review_7d`. Street View photos
+never set a floor.
+
 `CLOSED_PERMANENTLY` gives 0 whatever the other signals. `CLOSED_TEMPORARILY` caps the score at
 20. Recency is counted from the run date.
 
@@ -204,6 +220,6 @@ probability.
 `tests/test_outscraper_extract.py` covers dedup across queries, the bbox and address rules
 (including accents), batching of queries, grouping by per-category limit, parsing of
 `--categories`, the billing maximum, and async polling. `tests/test_outscraper_activity.py`
-covers date parsing, the score (full, empty, old, closed), batching by `google_id`, picking
+covers date parsing, the score (full, empty, old, closed, the recency floor, the profile bonus), batching by `google_id`, picking
 the newest review and photos, Street View photos, and failed downloads. Both inject a fake HTTP client, so they
 never call the API.

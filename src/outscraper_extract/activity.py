@@ -35,6 +35,13 @@ REVIEW_RECENCY = [(90, 30), (180, 25), (365, 15), (730, 5)]
 PHOTO_RECENCY = [(90, 20), (180, 15), (365, 10), (730, 3)]
 TEMPORARILY_CLOSED_CAP = 20
 
+# Recent activity is the strongest signal: it sets a floor, higher the more recent, so a place
+# with a review from yesterday scores high even with a bare profile. A review counts more than
+# a photo. On top of the floor the profile adds up to PROFILE_BONUS, to rank equally recent places.
+REVIEW_FLOOR = [(7, 95), (30, 90), (90, 85), (180, 70), (365, 55)]
+PHOTO_FLOOR = [(30, 85), (90, 80), (180, 65), (365, 50)]
+PROFILE_BONUS = 5
+
 Download = Callable[[str, Path], None]
 
 
@@ -106,11 +113,23 @@ def activity_score(place: dict, last_review: datetime | None, owner_answered: bo
         if present:
             score += POINTS[name]
             signals.append(name)
+    profile = score
     for label, date, table in (("review", last_review, REVIEW_RECENCY), ("photo", latest_photo, PHOTO_RECENCY)):
         points, bucket = recency_points(date, now, table)
         if points:
             score += points
             signals.append(f"{label}_{bucket}d")
+
+    floor, floor_signal = 0, None
+    for label, date, table in (("review", last_review, REVIEW_FLOOR), ("photo", latest_photo, PHOTO_FLOOR)):
+        points, bucket = recency_points(date, now, table)
+        if points > floor:
+            floor, floor_signal = points, f"recent_{label}_{bucket}d"
+    if floor:
+        bonus = round(PROFILE_BONUS * profile / sum(POINTS.values()))
+        if floor + bonus > score:
+            score = min(100, floor + bonus)
+            signals.append(floor_signal)
 
     if status == "CLOSED_TEMPORARILY":
         score = min(score, TEMPORARILY_CLOSED_CAP)
