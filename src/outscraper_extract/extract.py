@@ -141,6 +141,27 @@ def http_get_json(url: str, headers: dict[str, str]) -> dict:
         raise RuntimeError(f"Outscraper answered HTTP {error.code}: {body}") from error
 
 
+def request_async(path: str, params: list[tuple[str, str]], api_key: str, fetch: Fetch = http_get_json,
+                  sleep: Callable[[float], None] = time.sleep, poll_seconds: float = 5.0,
+                  timeout_seconds: float = 1800.0) -> list:
+    """Starts an async Outscraper request, polls until it finishes, and returns its `data`."""
+    headers = {"X-API-KEY": api_key, "Accept": "application/json"}
+    query = urllib.parse.urlencode(params + [("async", "true")])
+    answer = fetch(f"{API_URL}{path}?{query}", headers)
+
+    status_url = answer.get("results_location") or f"{API_URL}/requests/{answer['id']}"
+    waited = 0.0
+    while answer.get("status") not in ("Success", "Finished"):
+        if answer.get("status") not in (None, "Pending"):
+            raise RuntimeError(f"Outscraper request {answer.get('id')} ended as {answer.get('status')}")
+        if waited >= timeout_seconds:
+            raise TimeoutError(f"Outscraper request still pending after {waited:.0f}s: {status_url}")
+        sleep(poll_seconds)
+        waited += poll_seconds
+        answer = fetch(status_url, headers)
+    return answer.get("data") or []
+
+
 def search_batch(queries: list[str], limit: int, settings: Settings, api_key: str,
                  fetch: Fetch = http_get_json, sleep: Callable[[float], None] = time.sleep) -> list[list[dict]]:
     """One async request for several queries sharing a limit; returns one list of places per query."""
@@ -150,23 +171,9 @@ def search_batch(queries: list[str], limit: int, settings: Settings, api_key: st
         ("region", settings.region),
         ("coordinates", settings.coordinates),
         ("dropDuplicates", "true"),
-        ("async", "true"),
     ]
-    headers = {"X-API-KEY": api_key, "Accept": "application/json"}
-    answer = fetch(f"{API_URL}/maps/search-v3?{urllib.parse.urlencode(params)}", headers)
-
-    status_url = answer.get("results_location") or f"{API_URL}/requests/{answer['id']}"
-    waited = 0.0
-    while answer.get("status") not in ("Success", "Finished"):
-        if answer.get("status") not in (None, "Pending"):
-            raise RuntimeError(f"Outscraper request {answer.get('id')} ended as {answer.get('status')}")
-        if waited >= settings.timeout_seconds:
-            raise TimeoutError(f"Outscraper request still pending after {waited:.0f}s: {status_url}")
-        sleep(settings.poll_seconds)
-        waited += settings.poll_seconds
-        answer = fetch(status_url, headers)
-
-    data = answer.get("data") or []
+    data = request_async("/maps/search-v3", params, api_key, fetch, sleep,
+                         settings.poll_seconds, settings.timeout_seconds)
     # A single query sometimes comes back as a flat list of places instead of a list of lists.
     if data and isinstance(data[0], dict):
         data = [data]

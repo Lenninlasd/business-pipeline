@@ -72,6 +72,28 @@ the specific searches already find. To cover other categories for free, wait for
 another `--out` folder (for example `--out output/outscraper-2`). Each run overwrites the files
 in its folder.
 
+## Is the business still active?
+
+A second step adds, for each place inside the neighbourhood, its newest review, 5 of its
+photos (downloaded) and an `activity_score` from 0 to 100. How the score is computed is in
+[SPEC.md](SPEC.md#activity-score). Run the extractor first.
+
+```sh
+uv run python -m outscraper_extract.activity --dry-run                # worst-case billed reviews and photos
+uv run python -m outscraper_extract.activity --max-places 3           # pilot: check the output by hand
+uv run python -m outscraper_extract.activity                          # all places (costs credits)
+uv run python -m outscraper_extract.activity --reuse-raw              # recompute from the saved answers, free
+```
+
+Reviews and photos each have their own 500 free per 30 days. For about 90 places a full run
+stays inside both. After a pilot, open `outscraper_activity.jsonl` and check that
+`last_review_date`, `latest_photo_date` and `photos` are filled: Outscraper does not document
+the field names, so an empty column means the code reads the wrong one.
+
+It writes `outscraper_activity_raw.json`, `outscraper_activity.jsonl` and `photos/` into the
+same folder. The raw answers hold reviewer names and the photos may show people: they stay in
+`output/`.
+
 ## Output
 
 Everything goes to `output/outscraper/`. The repository ignores that folder because the

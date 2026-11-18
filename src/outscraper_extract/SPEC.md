@@ -140,9 +140,70 @@ filtered out afterwards. The API has no parameter that restricts results to an a
 - A business without a Google Maps listing cannot be found this way. The WhatsApp/TSV pipeline
   covers those.
 
+## Activity (`activity.py`)
+
+A second, separate step estimates whether each place is still active. It reads
+`outscraper_places.jsonl` and, for each place, asks Outscraper by `google_id`:
+
+| | Reviews | Photos |
+|---|---|---|
+| Endpoint | `GET /maps/reviews-v3` | `GET /maps/photos-v3` |
+| Parameters | `reviewsLimit=1`, `sort=newest`, `limit=1`, `async=true` | `photosLimit=5`, `tag=all` (`--photos-tag`: `latest`, `by_owner`, `menu`), `limit=1`, `async=true` |
+| Skipped when | the place has `reviews` = 0 | the place has `photos_count` = 0 |
+| Fields read | `reviews_data[].review_timestamp` (or `review_datetime_utc`), `owner_answer` | `photos_data[]`: `photo_url_big` (or `original_photo_url`, `photo_url`), `photo_date` (`M/D/YYYY H:MM:SS`). Also sent: `photo_tags` (e.g. `front`), `photo_upload_source`. |
+
+The endpoint and parameter names come from the official Python SDK. The response field names
+are not documented anywhere we found: the code accepts the likely variants, and a pilot must
+confirm them before a full run. Pilots on 3 places confirmed the review and photo fields.
+With `tag=latest`, `photos_data` came back empty even for a place with 93 photos, so the
+default is `tag=all`. Its photos are not sorted by date: the 5 returned are not always the 5
+newest, so `latest_photo_date` can be older than the real newest photo. Street View images
+(`streetviewpixels` URLs) are kept and downloaded, but their date does not count as a recent
+photo. Dates are read as Unix timestamps, ISO text or
+`MM/DD/YYYY HH:MM:SS`, all as UTC.
+
+Requests carry up to 10 ids. Billing: 1 review and up to 5 photos per place asked about. Both
+products have their own free tier (500 reviews and 500 photos per 30 days), then $3 per 1,000
+reviews and $2 per 1,000 photos. `--dry-run` prints the worst case; `--max-places N` pilots
+on the first N places.
+
+Photos are downloaded at once, because Google's links may expire, to
+`photos/<google_id>/<hash of the URL>.jpg`. A file that already exists is not downloaded
+again. A failed download leaves `file` as null and the run goes on.
+
+### Activity score
+
+`activity_score` (0-100) adds points per signal. It is a heuristic, not a calibrated
+probability.
+
+| Signal | Points |
+|---|---|
+| `business_status` is `OPERATIONAL` | 20 |
+| Newest review at most 90 / 180 / 365 / 730 days old | 30 / 25 / 15 / 5 |
+| Newest photo at most 90 / 180 / 365 / 730 days old | 20 / 15 / 10 / 3 |
+| `verified` (the owner claimed the listing) | 10 |
+| Has `working_hours` | 5 |
+| Has `phone` | 5 |
+| The owner answered the newest review | 5 |
+| Has `website` | 3 |
+| Has at least one review | 2 |
+
+`CLOSED_PERMANENTLY` gives 0 whatever the other signals. `CLOSED_TEMPORARILY` caps the score at
+20. Recency is counted from the run date.
+
+### Output
+
+| File | Content |
+|---|---|
+| `outscraper_activity_raw.json` | The answers as received: `{"reviews": {google_id: place}, "photos": {google_id: place}}`. It holds reviewer names and review text: personal data, kept only here. `--reuse-raw` recomputes from it for free. |
+| `outscraper_activity.jsonl` | Every field of the place, plus `last_review_date`, `owner_answered_last_review`, `latest_photo_date`, `photos` (`url`, `date`, `street_view`, `file`), `activity_score` and `activity_signals` (the signals that earned points, e.g. `review_90d`). |
+| `photos/` | The downloaded photos. They may show people's faces: never copy them out of `output/`. |
+
 ## Tests
 
 `tests/test_outscraper_extract.py` covers dedup across queries, the bbox and address rules
 (including accents), batching of queries, grouping by per-category limit, parsing of
-`--categories`, the billing maximum, and async polling. It uses an injected fake HTTP
-client, so it never calls the API.
+`--categories`, the billing maximum, and async polling. `tests/test_outscraper_activity.py`
+covers date parsing, the score (full, empty, old, closed), batching by `google_id`, picking
+the newest review and photos, Street View photos, and failed downloads. Both inject a fake HTTP client, so they
+never call the API.
