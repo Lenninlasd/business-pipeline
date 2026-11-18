@@ -1,10 +1,11 @@
 import hashlib
+import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from outscraper_extract.activity import activity_score, build_activity, fetch_details, parse_date
+from outscraper_extract.activity import activity_score, build_activity, describe_age, fetch_details, parse_date
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
 
@@ -34,12 +35,26 @@ class ParseDateTest(unittest.TestCase):
 
 class ScoreTest(unittest.TestCase):
     def test_everything_recent_scores_near_100(self) -> None:
-        score, signals = activity_score(FULL, days_ago(20), True, days_ago(40), NOW)
+        score, reasons = activity_score(FULL, days_ago(20), True, days_ago(40), NOW)
         self.assertEqual(score, 100)
-        self.assertIn("review_90d", signals)
+        self.assertEqual(reasons[:2], ["Última reseña hace 20 días (+30)", "Operativo en Google Maps (+20)"])
 
     def test_no_markers_scores_0(self) -> None:
-        self.assertEqual(activity_score({"google_id": "g2", "name": "X"}, None, None, None, NOW), (0, []))
+        self.assertEqual(activity_score({"google_id": "g2", "name": "X"}, None, None, None, NOW),
+                         (0, ["Sin reseñas", "Sin fotos"]))
+
+    def test_reasons_go_from_most_to_least_points_then_what_is_missing(self) -> None:
+        place = {"google_id": "g6", "name": "X", "business_status": "OPERATIONAL", "reviews": 3}
+        score, reasons = activity_score(place, days_ago(400), False, None, NOW)
+        self.assertEqual(score, 27)
+        self.assertEqual(reasons, [
+            "Operativo en Google Maps (+20)",
+            "Última reseña hace 1 año y 1 mes (+5)",
+            "Tiene reseñas (+2)",
+            "Sin reseñas recientes: la última es de hace 1 año y 1 mes",
+            "Sin fotos",
+            "El dueño no respondió la última reseña",
+        ])
 
     def test_old_signals_score_less_than_recent_ones(self) -> None:
         recent, _ = activity_score(FULL, days_ago(30), False, days_ago(30), NOW)
@@ -50,9 +65,9 @@ class ScoreTest(unittest.TestCase):
 
     def test_recent_activity_sets_a_high_floor_whatever_the_profile(self) -> None:
         bare = {"google_id": "g5", "name": "X", "business_status": "OPERATIONAL", "reviews": 1}
-        yesterday, signals = activity_score(bare, days_ago(1), False, None, NOW)
+        yesterday, reasons = activity_score(bare, days_ago(1), False, None, NOW)
         self.assertGreaterEqual(yesterday, 95)
-        self.assertIn("recent_review_7d", signals)
+        self.assertEqual(reasons[0], "Reseña hace 1 día (piso de 95)")
         review_89, _ = activity_score(bare, days_ago(89), False, None, NOW)
         photo_60, _ = activity_score(bare, None, False, days_ago(60), NOW)
         self.assertGreaterEqual(review_89, 85)
@@ -67,13 +82,29 @@ class ScoreTest(unittest.TestCase):
         self.assertGreater(full_score, bare_score)
         self.assertLessEqual(full_score, 100)
 
+    def test_profile_bonus_rounds_half_up(self) -> None:
+        # Profile 45 of 50 -> bonus 4.5 -> 5, so 95 + 5.
+        score, reasons = activity_score(FULL, days_ago(2), False, None, NOW)
+        self.assertEqual(score, 100)
+        self.assertEqual(reasons[:2], ["Reseña hace 2 días (piso de 95)", "Perfil: 45 de 50 puntos (+5)"])
+
     def test_closed_permanently_is_0_and_temporarily_is_capped(self) -> None:
         closed = dict(FULL, business_status="CLOSED_PERMANENTLY")
-        self.assertEqual(activity_score(closed, days_ago(5), True, days_ago(5), NOW), (0, ["closed_permanently"]))
+        self.assertEqual(activity_score(closed, days_ago(5), True, days_ago(5), NOW),
+                         (0, ["Cerrado permanentemente en Google Maps"]))
         paused = dict(FULL, business_status="CLOSED_TEMPORARILY")
-        score, signals = activity_score(paused, days_ago(5), True, days_ago(5), NOW)
+        score, reasons = activity_score(paused, days_ago(5), True, days_ago(5), NOW)
         self.assertEqual(score, 20)
-        self.assertIn("closed_temporarily", signals)
+        self.assertEqual(reasons[0], "Cerrado temporalmente en Google Maps (máximo 20)")
+
+
+class DescribeAgeTest(unittest.TestCase):
+    def test_spanish_ages(self) -> None:
+        for days, text in ((0, "hoy"), (1, "hace 1 día"), (29, "hace 29 días"), (45, "hace 1 mes"),
+                           (75, "hace 2 meses"), (365, "hace 1 año"), (400, "hace 1 año y 1 mes"),
+                           (800, "hace 2 años y 2 meses")):
+            with self.subTest(days=days):
+                self.assertEqual(describe_age(days), text)
 
 
 class FetchTest(unittest.TestCase):
@@ -108,20 +139,29 @@ class BuildActivityTest(unittest.TestCase):
             {"photo_url": "https://example.com/p2.jpg", "photo_date": "06/01/2025 10:00:00"},
             {"photo_date": "06/01/2025 10:00:00"},  # no URL: dropped
         ]}
-        downloaded: list[tuple[str, Path]] = []
+        downloaded: list[str] = []
 
-        def download(url: str, path: Path) -> None:
-            downloaded.append((url, path))
+        def download(url: str) -> bytes:
+            downloaded.append(url)
+            return b"\xff\xd8 jpeg" if url.endswith("p1.jpg") else b"\x89PNG png"
 
-        record = build_activity(FULL, review_answer, photo_answer, Path("out/photos"), download, NOW)
+        out = Path(tempfile.mkdtemp())
+        record = build_activity(FULL, review_answer, photo_answer, out, download, NOW)
         self.assertEqual(record["last_review_date"], days_ago(10).date().isoformat())
         self.assertIs(record["owner_answered_last_review"], True)
         self.assertEqual(record["latest_photo_date"], "2026-10-01")
         self.assertEqual([p["url"] for p in record["photos"]],
                          ["https://example.com/p1.jpg", "https://example.com/p2.jpg"])
         name = hashlib.sha1(b"https://example.com/p1.jpg").hexdigest()[:12]
-        self.assertEqual(downloaded[0], ("https://example.com/p1.jpg", Path(f"out/photos/g1/{name}.jpg")))
-        self.assertEqual(record["photos"][0]["file"], f"out/photos/g1/{name}.jpg")
+        self.assertEqual(record["photos"][0]["file"], str(out / "g1" / f"{name}.jpg"))
+        self.assertEqual((out / "g1" / f"{name}.jpg").read_bytes(), b"\xff\xd8 jpeg")
+        self.assertTrue(record["photos"][1]["file"].endswith(".png"))  # extension follows the content
+
+        # A second run finds the files and downloads nothing.
+        downloaded.clear()
+        again = build_activity(FULL, review_answer, photo_answer, out, download, NOW)
+        self.assertEqual(downloaded, [])
+        self.assertEqual([p["file"] for p in again["photos"]], [p["file"] for p in record["photos"]])
         self.assertEqual(record["activity_score"], 100)
         self.assertEqual(record["name"], "Tienda Luna")  # place fields are kept
 
@@ -130,16 +170,16 @@ class BuildActivityTest(unittest.TestCase):
             {"photo_url": "https://streetviewpixels-pa.googleapis.com/v1/x", "photo_date": "10/01/2026 10:00:00"},
             {"photo_url": "https://example.com/p.jpg", "photo_date": "8/27/2023 19:00:00"},
         ]}
-        record = build_activity(FULL, None, photo_answer, Path("p"), lambda url, path: None, NOW)
+        record = build_activity(FULL, None, photo_answer, Path(tempfile.mkdtemp()), lambda url: b"\xff\xd8", NOW)
         self.assertEqual(record["latest_photo_date"], "2023-08-27")
         self.assertEqual([p["street_view"] for p in record["photos"]], [True, False])
 
     def test_missing_answers_and_failed_downloads(self) -> None:
-        def download(url: str, path: Path) -> None:
+        def download(url: str) -> bytes:
             raise OSError("offline")
 
         photo_answer = {"photos_data": [{"photo_url": "https://example.com/p.jpg"}]}
-        record = build_activity({"google_id": "x:y", "name": "Z"}, None, photo_answer, Path("p"), download, NOW)
+        record = build_activity({"google_id": "x:y", "name": "Z"}, None, photo_answer, Path(tempfile.mkdtemp()), download, NOW)
         self.assertIsNone(record["last_review_date"])
         self.assertIsNone(record["owner_answered_last_review"])
         self.assertIsNone(record["photos"][0]["file"])

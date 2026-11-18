@@ -42,7 +42,9 @@ REVIEW_FLOOR = [(7, 95), (30, 90), (90, 85), (180, 70), (365, 55)]
 PHOTO_FLOOR = [(30, 85), (90, 80), (180, 65), (365, 50)]
 PROFILE_BONUS = 5
 
-Download = Callable[[str, Path], None]
+Download = Callable[[str], bytes]  # URL -> file content
+
+IMAGE_TYPES = [(b"\xff\xd8", ".jpg"), (b"\x89PNG", ".png"), (b"GIF8", ".gif"), (b"RIFF", ".webp")]
 
 
 # --- Dates -----------------------------------------------------------------------------------
@@ -91,15 +93,42 @@ def recency_points(date: datetime | None, now: datetime, table: list[tuple[int, 
     return 0, None
 
 
+REASON_LABELS = {  # user-facing text, so Spanish
+    "operational": "Operativo en Google Maps",
+    "verified": "Verificado por el dueño",
+    "working_hours": "Tiene horario",
+    "phone": "Tiene teléfono",
+    "owner_answer": "El dueño respondió la última reseña",
+    "website": "Tiene sitio web",
+    "has_reviews": "Tiene reseñas",
+}
+
+
+def describe_age(days: int) -> str:
+    """Spanish, rounded down: 0 -> "hoy", 45 -> "hace 1 mes", 400 -> "hace 1 año y 1 mes"."""
+    def unit(n: int, one: str, many: str) -> str:
+        return f"{n} {one if n == 1 else many}"
+    if days <= 0:
+        return "hoy"
+    if days < 30:
+        return f"hace {unit(days, 'día', 'días')}"
+    if days < 365:
+        return f"hace {unit(days // 30, 'mes', 'meses')}"
+    years, months = days // 365, (days % 365) // 30
+    return f"hace {unit(years, 'año', 'años')}" + (f" y {unit(months, 'mes', 'meses')}" if months else "")
+
+
 def activity_score(place: dict, last_review: datetime | None, owner_answered: bool | None,
                    latest_photo: datetime | None, now: datetime) -> tuple[int, list[str]]:
-    """Returns the 0-100 score and the signals that earned points."""
+    """Returns the 0-100 score and the reasons, in Spanish, from most to least important.
+
+    First what decided the number (closure, or the recent-activity floor), then what added
+    points, from most to least, then the important things that are missing, without points.
+    """
     status = place.get("business_status")
     if status == "CLOSED_PERMANENTLY":
-        return 0, ["closed_permanently"]
+        return 0, ["Cerrado permanentemente en Google Maps"]
 
-    signals: list[str] = []
-    score = 0
     flags = {
         "operational": status == "OPERATIONAL",
         "verified": bool(place.get("verified")),
@@ -109,32 +138,42 @@ def activity_score(place: dict, last_review: datetime | None, owner_answered: bo
         "website": bool(place.get("website")),
         "has_reviews": bool(place.get("reviews")),
     }
-    for name, present in flags.items():
-        if present:
-            score += POINTS[name]
-            signals.append(name)
-    profile = score
-    for label, date, table in (("review", last_review, REVIEW_RECENCY), ("photo", latest_photo, PHOTO_RECENCY)):
-        points, bucket = recency_points(date, now, table)
-        if points:
-            score += points
-            signals.append(f"{label}_{bucket}d")
+    items = [(POINTS[name], f"{REASON_LABELS[name]} (+{POINTS[name]})") for name, present in flags.items() if present]
+    profile = sum(points for points, _ in items)
 
-    floor, floor_signal = 0, None
-    for label, date, table in (("review", last_review, REVIEW_FLOOR), ("photo", latest_photo, PHOTO_FLOOR)):
-        points, bucket = recency_points(date, now, table)
-        if points > floor:
-            floor, floor_signal = points, f"recent_{label}_{bucket}d"
-    if floor:
-        bonus = round(PROFILE_BONUS * profile / sum(POINTS.values()))
-        if floor + bonus > score:
-            score = min(100, floor + bonus)
-            signals.append(floor_signal)
+    missing: list[str] = []
+    best_floor: tuple[int, str] | None = None
+    for noun, date, recency, floors in (("reseña", last_review, REVIEW_RECENCY, REVIEW_FLOOR),
+                                        ("foto", latest_photo, PHOTO_RECENCY, PHOTO_FLOOR)):
+        if date is None:
+            missing.append("Sin reseñas" if noun == "reseña" else "Sin fotos")
+            continue
+        age = describe_age((now - date).days)
+        points, _ = recency_points(date, now, recency)
+        if points:
+            items.append((points, f"Última {noun} {age} (+{points})"))
+        floor, _ = recency_points(date, now, floors)
+        if not floor:  # older than every floor: a year for both
+            missing.append(f"Sin {noun}s recientes: la última es de {age}")
+        elif best_floor is None or floor > best_floor[0]:
+            best_floor = (floor, f"{noun.capitalize()} {age} (piso de {floor})")
+    if owner_answered is False:
+        missing.append("El dueño no respondió la última reseña")
+
+    score = sum(points for points, _ in items)
+    reasons = [text for _, text in sorted(items, key=lambda item: -item[0])]
+    if best_floor:
+        total = sum(POINTS.values())
+        bonus = int(PROFILE_BONUS * profile / total + 0.5)  # round half up
+        if best_floor[0] + bonus > score:
+            score = min(100, best_floor[0] + bonus)
+            reasons = [best_floor[1]] + ([f"Perfil: {profile} de {total} puntos (+{bonus})"] if profile else [])
+    reasons += missing
 
     if status == "CLOSED_TEMPORARILY":
         score = min(score, TEMPORARILY_CLOSED_CAP)
-        signals.append("closed_temporarily")
-    return score, signals
+        reasons.insert(0, f"Cerrado temporalmente en Google Maps (máximo {TEMPORARILY_CLOSED_CAP})")
+    return score, reasons
 
 
 # --- API -------------------------------------------------------------------------------------
@@ -161,12 +200,15 @@ def fetch_details(path: str, google_ids: list[str], params: dict[str, str], api_
     return answers
 
 
-def http_download(url: str, path: Path) -> None:
+def http_download(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "business-pipeline"})
     with urllib.request.urlopen(request, timeout=60) as response:
-        data = response.read()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+        return response.read()
+
+
+def image_extension(data: bytes) -> str:
+    """The extension that matches the file's content: Google serves PNGs under photo URLs too."""
+    return next((ext for magic, ext in IMAGE_TYPES if data.startswith(magic)), ".bin")
 
 
 # --- Records ---------------------------------------------------------------------------------
@@ -198,17 +240,21 @@ def build_activity(place: dict, review_answer: dict | None, photo_answer: dict |
     for photo in photos:
         # Named by URL, so a later run never mistakes an old file for a new photo.
         name = hashlib.sha1(photo["url"].encode()).hexdigest()[:12]
-        path = photos_dir / safe_name(place.get("google_id", "")) / f"{name}.jpg"
+        folder = photos_dir / safe_name(place.get("google_id", ""))
         try:
-            if not path.exists():
-                download(photo["url"], path)
+            path = next((p for p in sorted(folder.glob(f"{name}.*"))), None)
+            if path is None:
+                data = download(photo["url"])
+                path = folder / f"{name}{image_extension(data)}"
+                folder.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
             photo["file"] = str(path)
         except OSError as error:
             print(f"Could not download a photo of {place.get('name')}: {error}", file=sys.stderr)
             photo["file"] = None
     latest_photo = next((p["date"] for p in photos if p["date"] and not p["street_view"]), None)
 
-    score, signals = activity_score(place, last_review_date, owner_answered, latest_photo, now)
+    score, reasons = activity_score(place, last_review_date, owner_answered, latest_photo, now)
     return {
         **place,
         "last_review_date": last_review_date.date().isoformat() if last_review_date else None,
@@ -216,7 +262,7 @@ def build_activity(place: dict, review_answer: dict | None, photo_answer: dict |
         "latest_photo_date": latest_photo.date().isoformat() if latest_photo else None,
         "photos": [{**p, "date": p["date"].date().isoformat() if p["date"] else None} for p in photos],
         "activity_score": score,
-        "activity_signals": signals,
+        "activity_reasons": reasons,
     }
 
 

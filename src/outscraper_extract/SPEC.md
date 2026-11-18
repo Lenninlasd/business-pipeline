@@ -168,8 +168,9 @@ reviews and $2 per 1,000 photos. `--dry-run` prints the worst case; `--max-place
 on the first N places.
 
 Photos are downloaded at once, because Google's links may expire, to
-`photos/<google_id>/<hash of the URL>.jpg`. A file that already exists is not downloaded
-again. A failed download leaves `file` as null and the run goes on.
+`photos/<google_id>/<hash of the URL>.<ext>`. The extension follows the content (`.jpg`,
+`.png`, `.gif`, `.webp`): Google serves some PNGs under photo URLs. A photo whose file already
+exists is not downloaded again. A failed download leaves `file` as null and the run goes on.
 
 ### Activity score
 
@@ -191,7 +192,8 @@ probability.
 Recent activity is the strongest signal, so it also sets a floor. A review from yesterday
 proves the place was open yesterday, whatever its profile says; a review counts more than a
 photo. The score is the larger of the sum above and the floor plus a profile bonus (0-5 points,
-in proportion to the profile signals: every row except the review and photo dates).
+in proportion to the profile signals: every row except the review and photo dates, rounded half
+up, so 4.5 gives 5).
 
 | Newest review at most | Floor | Newest photo at most | Floor |
 |---|---|---|---|
@@ -201,18 +203,37 @@ in proportion to the profile signals: every row except the review and photo date
 | 180 days | 70 | 365 days | 50 |
 | 365 days | 55 | | |
 
-The highest floor applies, and adds a signal such as `recent_review_7d`. Street View photos
+The highest floor applies. Street View photos
 never set a floor.
 
 `CLOSED_PERMANENTLY` gives 0 whatever the other signals. `CLOSED_TEMPORARILY` caps the score at
 20. Recency is counted from the run date.
+
+### Reasons
+
+`activity_reasons` explains the score in Spanish, from most to least important:
+
+1. A closure, if any: `"Cerrado permanentemente en Google Maps"` (the only reason then), or
+   `"Cerrado temporalmente en Google Maps (máximo 20)"`.
+2. What decided the number:
+   - when the floor wins, the floor (`"Reseña hace 2 días (piso de 95)"`) and the bonus
+     (`"Perfil: 45 de 50 puntos (+5)"`);
+   - otherwise, every signal that added points, from most to least (`"Operativo en Google Maps
+     (+20)"`, `"Última reseña hace 1 año y 6 meses (+5)"`).
+3. What is missing, without points: `"Sin reseñas"`, `"Sin fotos"`, `"Sin reseñas recientes: la
+   última es de hace 2 años"` (older than every floor, so over a year), and `"El dueño no
+   respondió la última reseña"`. Lesser gaps, such as no website, are not listed.
+
+Ages are rounded down: `hoy`, `hace N días`, `hace N meses` (30 days each), `hace N años y N
+meses`. The text is for people. Code that filters should read `last_review_date`,
+`latest_photo_date` and `owner_answered_last_review`, not parse the reasons.
 
 ### Output
 
 | File | Content |
 |---|---|
 | `outscraper_activity_raw.json` | The answers as received: `{"reviews": {google_id: place}, "photos": {google_id: place}}`. It holds reviewer names and review text: personal data, kept only here. `--reuse-raw` recomputes from it for free. |
-| `outscraper_activity.jsonl` | Every field of the place, plus `last_review_date`, `owner_answered_last_review`, `latest_photo_date`, `photos` (`url`, `date`, `street_view`, `file`), `activity_score` and `activity_signals` (the signals that earned points, e.g. `review_90d`). |
+| `outscraper_activity.jsonl` | Every field of the place, plus `last_review_date`, `owner_answered_last_review`, `latest_photo_date`, `photos` (`url`, `date`, `street_view`, `file`), `activity_score` and `activity_reasons` (see "Reasons"). |
 | `photos/` | The downloaded photos. They may show people's faces: never copy them out of `output/`. |
 
 ## Tests
@@ -220,6 +241,7 @@ never set a floor.
 `tests/test_outscraper_extract.py` covers dedup across queries, the bbox and address rules
 (including accents), batching of queries, grouping by per-category limit, parsing of
 `--categories`, the billing maximum, and async polling. `tests/test_outscraper_activity.py`
-covers date parsing, the score (full, empty, old, closed, the recency floor, the profile bonus), batching by `google_id`, picking
-the newest review and photos, Street View photos, and failed downloads. Both inject a fake HTTP client, so they
+covers date parsing, the score (full, empty, old, closed, the recency floor, the profile bonus and its rounding, the order and text of the reasons, Spanish ages), batching by `google_id`, picking
+the newest review and photos, Street View photos, file extensions, skipping files already
+downloaded, and failed downloads. Both inject a fake HTTP client, so they
 never call the API.
