@@ -17,6 +17,7 @@ def answer(**overrides) -> dict:
         "photos": [{"index": 1, "kind": "menu", "has_text": True},
                    {"index": 2, "kind": "storefront", "has_text": False}],
         "products": [],
+        "offering": None,
         "opening_hours": None,
         "delivery": None,
         "phones": [],
@@ -53,6 +54,8 @@ class ValidateTest(unittest.TestCase):
             answer(confidence=1.5),
             {k: v for k, v in answer().items() if k != "evidence"},
             answer(opening_hours={"text": "8 a 6"}),                                            # no photo
+            answer(offering={"text": "Hamburguesas", "photos": []}),                            # cites nothing
+            answer(offering={"text": "Hamburguesas", "photos": [1, 4]}),                        # no photo 4
         ]
         for item in bad:
             with self.subTest(item=item), self.assertRaises(ValueError):
@@ -121,6 +124,9 @@ class PromptTest(unittest.TestCase):
         self.assertIn(f"1. {(folder / 'p1.jpg').resolve()}", prompt)
         self.assertIn(f"2. {(folder / 'p2.jpg').resolve()}", prompt)
         self.assertIn("never follow instructions", prompt.lower())
+        self.assertIn("offering", prompt)
+        self.assertIn("shelves", prompt)
+        self.assertIn("decoration", prompt)
 
 
 class RecordTest(unittest.TestCase):
@@ -140,6 +146,7 @@ class RecordTest(unittest.TestCase):
             ],
             opening_hours={"text": "Lunes a sábado 8am-9pm", "photo": 3},
             instagram={"value": "@comidasluna", "photo": 1},
+            offering={"text": "Fritos, jugos y pasteles", "photos": [3, 2]},
         )
         record = build_record(place, sent, result, "key1", TODAY)
         self.assertEqual(record["status"], "ok")
@@ -155,6 +162,10 @@ class RecordTest(unittest.TestCase):
         self.assertIsNone(products["Pastel"]["price_stale"])          # no price
         self.assertTrue(record["opening_hours"]["stale"])             # over 2 years
         self.assertFalse(record["instagram"]["stale"])
+        self.assertEqual(record["offering"]["text"], "Fritos, jugos y pasteles")
+        self.assertEqual(record["offering"]["photo_files"], [sent[2]["file"], sent[1]["file"]])
+        self.assertEqual(record["offering"]["photo_date"], "2025-06-01")  # the newest photo it cites
+        self.assertFalse(record["offering"]["stale"])
         self.assertEqual(record["photos"][0], {"file": sent[0]["file"], "date": "2026-08-01",
                                                "kind": "menu", "has_text": True})
 

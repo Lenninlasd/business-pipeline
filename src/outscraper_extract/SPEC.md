@@ -270,18 +270,22 @@ Each fact cites the number of the photo it comes from, in the prompt's order:
 | Field | Content |
 |---|---|
 | `photos[]` | `index`, `kind` (`menu`, `price_list`, `flyer`, `storefront`, `product`, `interior`, `other`), `has_text` |
-| `products[]` | `name`, `price_cop` (integer or null), `section`, `photo` |
+| `products[]` | `name`, `price_cop` (integer or null), `section`, `photo`. From a menu, price list or sign, and also brands or products seen on shelves or packaging. |
+| `offering` | `text`: what it sells, in a few Spanish words, also judged from photos without text; `photos`: the photo numbers it rests on (at least one); or null |
 | `opening_hours` | `text` as written, `photo`; or null |
 | `delivery` | `offered`, `area`, `cost`, `photo`; or null |
 | `phones[]` | `raw` as written, `is_whatsapp`, `photo` |
 | `instagram`, `website` | `value`, `photo`; or null |
 | `has_physical_store` | true when a photo shows the premises, otherwise null |
-| `other_facts[]` | `label` (snake_case, English), `value`, `evidence`, `photo` |
+| `other_facts[]` | `label` (snake_case, English), `value`, `evidence`, `photo`. Only what helps a customer: payment, promotions, services, parking, accessibility, a name on a sign that differs from Google's. Not decoration, furniture, mascots or mood. |
 | `evidence`, `confidence` | literal quotes; 0 to 1 |
 
 Claude never invents a value, copies text in Spanish as written, and does not describe people.
 
 ### Dates and staleness (Python, not Claude)
+
+`PROMPT_VERSION` 2 added `offering` and narrowed `other_facts`, after a pilot on 4 places
+where 16 photos held no menu or price list and the facts included decoration.
 
 Many photos are years old, so every fact gets its photo's `photo_file` and `photo_date`, and a
 `stale` flag by kind of fact:
@@ -289,10 +293,11 @@ Many photos are years old, so every fact gets its photo's `photo_file` and `phot
 | Fact | Trusted while the photo is at most |
 |---|---|
 | Price (`price_stale`) | 365 days |
-| Product or service (`stale`) | 3 years |
+| Product or service, offering (`stale`) | 3 years |
 | Hours, delivery, phones, social links, other facts (`stale`) | 2 years |
 
-An undated photo counts as stale. `price_stale` is null when there is no price. Products with
+The offering takes the date of the newest photo it cites and lists all of them in
+`photo_files`. An undated photo counts as stale. `price_stale` is null when there is no price. Products with
 the same name, ignoring accents, case and spaces, are merged, keeping the one from the newest
 photo. `as_of` is the date of the newest photo sent. When this is merged with the WhatsApp
 pipeline, WhatsApp facts should win: they are recent.
@@ -302,7 +307,7 @@ pipeline, WhatsApp facts should win: they are recent.
 | File | Content |
 |---|---|
 | `outscraper_photo_facts.jsonl` | One line per place: `google_id`, `name`, `category`, `status` (`ok`, `no_photos`, `failed`). When `ok`: `as_of`, `photos` (`file`, `date`, `kind`, `has_text`), the facts above with `photo_file`, `photo_date` and `stale`, `evidence`, `confidence`, `model`, `prompt_version`, `cache_key`, `cached`. When `failed`: `error`. |
-| `outscraper_photo_report.md` | Places read, from the cache, without photos and failed; coverage (photos with text, products, current and stale prices, hours, delivery, Instagram, physical store); photos by kind; failures. |
+| `outscraper_photo_report.md` | Places read, from the cache, without photos and failed; coverage (photos with text, offering, products, current and stale prices, hours, delivery, Instagram, physical store); photos by kind; failures. |
 | `cache/photos/` | Claude's validated answers. Phones in photos make them personal data. |
 
 `--dry-run` counts places, photos and cached answers without calling Claude. `--only` (google
