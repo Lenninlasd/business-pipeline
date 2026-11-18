@@ -45,6 +45,9 @@ category:
 - There are 62 categories in Spanish (`CATEGORIES` in `extract.py`), including generic ones
   ("negocios", "tiendas", "comercio"). They overlap on purpose: a wider net finds more small
   businesses, and duplicates are removed afterwards.
+- Each category can carry its own limit (`--categories "gimnasio:5,restaurante:60"`); the rest
+  use `--limit`. `limit` is a request parameter, so queries are grouped by limit and each group
+  is batched separately. Results keep the query order.
 - Every search is centred on `@10.994,-74.848,16z` (street-level zoom), with `language=es` and
   `region=CO`.
 
@@ -72,7 +75,7 @@ script stops and shows the first 500 characters of the response.
    their query to `queries`.
 4. **Inside or outside.** A place is inside when:
    - its coordinates fall within the bounding box (`in_area_reason = "bbox"`), or
-   - `full_address`, `borough` or `street` contains "Alameda del Río", ignoring accents and case
+   - `address`, `full_address`, `borough` or `street` contains "Alameda del Río", ignoring accents and case
      (`in_area_reason = "address"`).
 
    Any other place is outside (`in_area_reason = null`). Outside places are written to their own
@@ -92,13 +95,15 @@ script stops and shows the first 500 characters of the response.
 | `category` | string \| null | `category`, or `type` |
 | `subtypes` | string \| null | `subtypes` (comma-separated) |
 | `phone` | string \| null | `phone` |
-| `website` | string \| null | `site` |
-| `full_address` | string \| null | `full_address` |
-| `borough` | string \| null | `borough` (usually the neighbourhood) |
+| `website` | string \| null | `website`, or `site`. Often an Instagram or Facebook URL. |
+| `full_address` | string \| null | `address`, or `full_address` |
+| `borough` | string \| null | `borough` (usually the neighbourhood; search-v3 does not send it) |
 | `latitude`, `longitude` | number \| null | `latitude`, `longitude` |
 | `rating` | number \| null | `rating` |
 | `reviews` | integer \| null | `reviews` (count) |
 | `business_status` | string \| null | `business_status` (`OPERATIONAL`, `CLOSED_TEMPORARILY`, …) |
+| `verified` | boolean \| null | `verified` (the owner claimed the listing) |
+| `photos_count` | integer \| null | `photos_count` |
 | `working_hours` | object \| null | `working_hours` |
 | `location_link` | string \| null | `location_link` (Google Maps URL) |
 | `in_area_reason` | `"bbox"` \| `"address"` \| null | computed (rule 4) |
@@ -115,11 +120,14 @@ script stops and shows the first 500 characters of the response.
 
 ## Cost
 
-At most, a run bills `queries × limit` places: 62 × 100 = 6,200 with the defaults.
+At most, a run bills the sum of the per-query limits: 62 × 100 = 6,200 with the defaults.
+Outscraper bills every returned place, including those outside the area, which are only
+filtered out afterwards. The API has no parameter that restricts results to an area:
+`coordinates` sets the centre, and whether its zoom narrows the search is undocumented.
 `dropDuplicates` may reduce that, depending on how Outscraper bills. The guardrails:
 
 - `--dry-run` prints the queries and that maximum without calling the API;
-- `--limit` and `--categories` shrink a run;
+- `--limit`, `--categories` and per-category `:N` limits shrink a run;
 - `--reuse-raw` re-runs the filtering for free.
 
 ## Known limits and open questions
@@ -135,5 +143,6 @@ At most, a run bills `queries × limit` places: 62 × 100 = 6,200 with the defau
 ## Tests
 
 `tests/test_outscraper_extract.py` covers dedup across queries, the bbox and address rules
-(including accents), batching of queries, and async polling. It uses an injected fake HTTP
+(including accents), batching of queries, grouping by per-category limit, parsing of
+`--categories`, the billing maximum, and async polling. It uses an injected fake HTTP
 client, so it never calls the API.

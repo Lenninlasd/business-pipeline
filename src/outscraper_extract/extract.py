@@ -59,13 +59,17 @@ CATEGORIES = [
 @dataclass
 class Settings:
     queries: list[str]
-    limit: int  # places per query
+    limit: int  # places per query, unless `limits` names the query
     coordinates: str
+    limits: dict[str, int] = field(default_factory=dict)  # per-query overrides
     language: str = "es"
     region: str = "CO"
     batch_size: int = 25  # queries per API request
     poll_seconds: float = 5.0
     timeout_seconds: float = 1800.0
+
+    def limit_for(self, query: str) -> int:
+        return self.limits.get(query, self.limit)
 
 
 @dataclass
@@ -85,14 +89,41 @@ class Place:
     rating: float | None
     reviews: int | None
     business_status: str | None
+    verified: bool | None  # the owner claimed the listing
+    photos_count: int | None
     working_hours: dict | None
     location_link: str | None
     in_area_reason: str | None = None  # bbox | address | None (outside)
     queries: list[str] = field(default_factory=list)
 
 
+def build_query(category: str) -> str:
+    return f"{category}, {AREA_NAME}, {CITY}, Colombia"
+
+
 def build_queries(categories: list[str]) -> list[str]:
-    return [f"{category}, {AREA_NAME}, {CITY}, Colombia" for category in categories]
+    return [build_query(category) for category in categories]
+
+
+def parse_categories(text: str) -> list[tuple[str, int | None]]:
+    """Parses "gimnasio:5,restaurante" into (category, limit); None means the run's --limit."""
+    parsed: list[tuple[str, int | None]] = []
+    for item in text.split(","):
+        name, sep, limit = (part.strip() for part in item.partition(":"))
+        if not name:
+            raise ValueError(f"Empty category in {text!r}")
+        if not sep:
+            parsed.append((name, None))
+            continue
+        if not limit.isdigit() or int(limit) < 1:
+            raise ValueError(f"Bad limit for {name!r}: {limit!r} (use a whole number of 1 or more)")
+        parsed.append((name, int(limit)))
+    return parsed
+
+
+def max_billed(settings: Settings) -> int:
+    """The most places a run can bill: every query returning its full limit."""
+    return sum(settings.limit_for(query) for query in settings.queries)
 
 
 # --- API -------------------------------------------------------------------------------------
@@ -110,11 +141,11 @@ def http_get_json(url: str, headers: dict[str, str]) -> dict:
         raise RuntimeError(f"Outscraper answered HTTP {error.code}: {body}") from error
 
 
-def search_batch(queries: list[str], settings: Settings, api_key: str, fetch: Fetch = http_get_json,
-                 sleep: Callable[[float], None] = time.sleep) -> list[list[dict]]:
-    """One async request for several queries; returns one list of places per query."""
+def search_batch(queries: list[str], limit: int, settings: Settings, api_key: str,
+                 fetch: Fetch = http_get_json, sleep: Callable[[float], None] = time.sleep) -> list[list[dict]]:
+    """One async request for several queries sharing a limit; returns one list of places per query."""
     params = [("query", q) for q in queries] + [
-        ("limit", str(settings.limit)),
+        ("limit", str(limit)),
         ("language", settings.language),
         ("region", settings.region),
         ("coordinates", settings.coordinates),
@@ -144,13 +175,22 @@ def search_batch(queries: list[str], settings: Settings, api_key: str, fetch: Fe
 
 def search_all(settings: Settings, api_key: str, fetch: Fetch = http_get_json,
                sleep: Callable[[float], None] = time.sleep) -> dict[str, list[dict]]:
+    # `limit` is per request, so queries are grouped by limit before batching.
+    groups: dict[int, list[str]] = {}
+    for query in settings.queries:
+        groups.setdefault(settings.limit_for(query), []).append(query)
+
     results: dict[str, list[dict]] = {}
-    for start in range(0, len(settings.queries), settings.batch_size):
-        batch = settings.queries[start:start + settings.batch_size]
-        print(f"Querying {start + 1}-{start + len(batch)} of {len(settings.queries)}...", file=sys.stderr)
-        for query, places in zip(batch, search_batch(batch, settings, api_key, fetch, sleep)):
-            results[query] = places
-    return results
+    done = 0
+    for limit, queries in groups.items():
+        for start in range(0, len(queries), settings.batch_size):
+            batch = queries[start:start + settings.batch_size]
+            print(f"Querying {done + 1}-{done + len(batch)} of {len(settings.queries)} (limit {limit})...",
+                  file=sys.stderr)
+            for query, places in zip(batch, search_batch(batch, limit, settings, api_key, fetch, sleep)):
+                results[query] = places
+            done += len(batch)
+    return {query: results[query] for query in settings.queries if query in results}
 
 
 # --- Filtering -------------------------------------------------------------------------------
@@ -165,7 +205,7 @@ def in_area_reason(raw: dict, bbox: tuple[float, float, float, float]) -> str | 
     lat, lng = raw.get("latitude"), raw.get("longitude")
     if lat is not None and lng is not None and south <= lat <= north and west <= lng <= east:
         return "bbox"
-    address = " ".join(str(raw.get(key) or "") for key in ("full_address", "borough", "street"))
+    address = " ".join(str(raw.get(key) or "") for key in ("address", "full_address", "borough", "street"))
     if plain(AREA_NAME) in plain(address):
         return "address"
     return None
@@ -178,14 +218,17 @@ def to_place(raw: dict) -> Place:
         category=raw.get("category") or raw.get("type"),
         subtypes=raw.get("subtypes"),
         phone=raw.get("phone"),
-        website=raw.get("site"),
-        full_address=raw.get("full_address"),
+        # search-v3 names first; the older names are kept as a fallback.
+        website=raw.get("website") or raw.get("site"),
+        full_address=raw.get("address") or raw.get("full_address"),
         borough=raw.get("borough"),
         latitude=raw.get("latitude"),
         longitude=raw.get("longitude"),
         rating=raw.get("rating"),
         reviews=raw.get("reviews"),
         business_status=raw.get("business_status"),
+        verified=raw.get("verified"),
+        photos_count=raw.get("photos_count"),
         working_hours=raw.get("working_hours"),
         location_link=raw.get("location_link"),
     )
@@ -245,7 +288,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("output/outscraper"),
                         help="Output folder (default: output/outscraper)")
     parser.add_argument("--limit", type=int, default=100, help="Places per query (default: 100)")
-    parser.add_argument("--categories", help="Comma-separated categories, replacing the built-in list")
+    parser.add_argument("--categories",
+                        help='Comma-separated categories, replacing the built-in list. '
+                             'Add ":N" to cap one category, e.g. "gimnasio:5,restaurante:60"')
     parser.add_argument("--coordinates", default=DEFAULT_COORDINATES, help=f"Search bias (default: {DEFAULT_COORDINATES})")
     parser.add_argument("--bbox", type=parse_bbox, default=DEFAULT_BBOX,
                         help="Area as south,west,north,east (default: %(default)s)")
@@ -253,14 +298,19 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print the queries and the worst-case cost, then exit")
     args = parser.parse_args()
 
-    categories = [c.strip() for c in args.categories.split(",")] if args.categories else CATEGORIES
-    settings = Settings(queries=build_queries(categories), limit=args.limit, coordinates=args.coordinates)
+    try:
+        categories = parse_categories(args.categories) if args.categories else [(c, None) for c in CATEGORIES]
+    except ValueError as error:
+        parser.error(str(error))
+    limits = {build_query(name): limit for name, limit in categories if limit is not None}
+    settings = Settings(queries=build_queries([name for name, _ in categories]), limit=args.limit,
+                        coordinates=args.coordinates, limits=limits)
     raw_path = args.out / "outscraper_raw.json"
 
     if args.dry_run:
-        print("\n".join(settings.queries))
-        print(f"\n{len(settings.queries)} queries x up to {settings.limit} places = "
-              f"at most {len(settings.queries) * settings.limit} billed places.")
+        for query in settings.queries:
+            print(f"{settings.limit_for(query):>4}  {query}")
+        print(f"\n{len(settings.queries)} queries, at most {max_billed(settings)} billed places.")
         return
 
     if args.reuse_raw:

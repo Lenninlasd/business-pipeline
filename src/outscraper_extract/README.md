@@ -30,14 +30,47 @@ uv run python -m unittest tests.test_outscraper_extract # tests
 
 | Option | Default | Purpose |
 |---|---|---|
-| `--limit N` | `100` | Places requested per query. The bill grows with queries × limit. |
-| `--categories "a,b"` | built-in list (62) | Search only these categories. |
+| `--limit N` | `100` | Places requested per query. The bill grows with the sum of the limits. |
+| `--categories "a,b:N"` | built-in list (62) | Search only these categories. `:N` caps one category at N places; the others use `--limit`. |
 | `--coordinates` | `@10.994,-74.848,16z` | Where Google Maps centres each search. |
 | `--bbox S,W,N,E` | `10.984,-74.860,11.004,-74.835` | What counts as inside the neighbourhood. |
 | `--reuse-raw` | off | Skip the API and filter `outscraper_raw.json` again. |
 | `--out DIR` | `output/outscraper` | Output folder. |
 
 Start with `--dry-run`, then a small `--limit` or a few `--categories`, before a full run.
+
+## A free run (up to 500 places)
+
+Outscraper's first 500 places in each 30-day period are free. After that it charges
+$3 per 1,000 (see [SPEC.md](SPEC.md#cost)). A run bills at most the sum of its per-query
+limits, so the plan below gives each category its own limit and adds up to 500.
+
+`limit` is a ceiling, not a filter. Google Maps does not stop at the neighbourhood edge: a
+search for a category with 2 gyms inside still returns up to its limit, the rest from nearby,
+and every returned place is billed. So scarce categories get a small limit and busy ones a large
+one.
+
+1. In the Outscraper dashboard, check that no free places have been used this period. Any
+   earlier usage counts against the 500.
+2. Set the API key (see [Setup](#setup)).
+3. Check the plan without calling the API. The last line must read
+   `20 queries, at most 500 billed places.`
+
+   ```sh
+   uv run python -m outscraper_extract --dry-run --categories "restaurante:70,comida rápida:50,tienda de barrio:40,peluquería:30,salón de belleza:30,barbería:25,droguería:25,panadería:25,cafetería:25,minimercado:25,licorera:20,ferretería:20,papelería:20,odontólogo:20,consultorio médico:20,heladería:15,supermercado:10,veterinaria:10,lavandería:10,gimnasio:10"
+   ```
+
+4. Run the same command without `--dry-run`.
+5. Read `output/outscraper/outscraper_report.md`. Expect fewer than 500 unique places inside
+   the neighbourhood: the same shop shows up under several categories, and some results fall
+   outside the area. A category whose inside count is close to its limit was probably cut
+   short: give it more next time. One with almost everything outside can go lower.
+
+The categories are the common neighbourhood businesses, and the limits are first guesses.
+The generic ones ("negocios", "tiendas", ...) are left out because they mostly return places
+the specific searches already find. To cover other categories for free, wait for the next 30-day period and run them with
+another `--out` folder (for example `--out output/outscraper-2`). Each run overwrites the files
+in its folder.
 
 ## Output
 
