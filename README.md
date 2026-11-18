@@ -77,16 +77,19 @@ Everything goes to `output/`, which git ignores:
 
 ```
 src/business_pipeline/   the pipeline (one module per step)
-src/outscraper_extract/  Google Maps extraction, independent (see below)
+src/outscraper_extract/  the Google Maps pipeline, separate (see below)
 schema/                  schema decisions (fields.tsv), directory snapshot, eval history: no data
 tests/                   unittest, synthetic data only
-SPEC.md                  pipeline spec
+SPEC.md                  WhatsApp/TSV pipeline spec
 CLAUDE.md                rules for AI agents working here
 ```
 
-## Other extractions
+## The other pipeline: Google Maps
 
-These share the repository and the virtual environment, but not code or output:
+This repository holds a second, separate pipeline. It shares the repository and the virtual
+environment, never code, input or output, and the two are never merged:
 
-- [Google Maps via Outscraper](src/outscraper_extract/README.md): businesses Google Maps lists in
-  Alameda del Río ([spec](src/outscraper_extract/SPEC.md)). Output goes to `output/outscraper/`.
+- [Google Maps pipeline](src/outscraper_extract/README.md) ([spec](src/outscraper_extract/SPEC.md)):
+  businesses Google Maps lists in Alameda del Río, how likely each is to be active, and what
+  their photos show. Output goes to `output/outscraper/`, and it has its own handoff to
+  `alameda-dir`.

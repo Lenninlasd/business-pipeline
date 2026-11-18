@@ -1,4 +1,9 @@
-# Spec: business extraction pipeline
+# Spec: WhatsApp/TSV business pipeline
+
+This is one of two separate pipelines in this repository. The other, the Google Maps pipeline,
+is specified in [src/outscraper_extract/SPEC.md](src/outscraper_extract/SPEC.md). They share
+the repository and the virtual environment, never code, input or output, and they are never
+merged.
 
 Status as of 2026-11-17: step 1 is implemented and tested, steps 2 to 6 are designed here and not
 built yet. Update the "Status" line of each step when it changes.
@@ -18,7 +23,8 @@ crosses over (see "Handoff to the directory").
 
 - Loading data into the directory database. That is a change in `alameda-dir`.
 - Real-time sync with WhatsApp. Each run works on the files present in the data folder.
-- Merging with the Google Maps extraction (`outscraper_extract`). See "Open questions".
+- The Google Maps pipeline (`src/outscraper_extract/`). Decided on 2026-11-18: it stays
+  separate, with its own spec and its own handoff, and is never merged with this one.
 - Videos and PDFs. They are inventoried in step 1 and skipped by step 3 for now.
 
 ## Constraints
@@ -535,7 +541,8 @@ claude -p "<prompt with the post text and the attachment paths>" \
 
 ## Handoff to the directory
 
-- The only artifact that crosses repositories is `output/businesses.json`.
+- The only artifact this pipeline sends across repositories is `output/businesses.json`. The
+  Google Maps pipeline has its own handoff (see its spec).
 - The directory spec says business data is loaded "through reviewed data migrations"
   (deliberate exclusions table). Loading this JSON therefore needs an OpenSpec change in
   `alameda-dir`, for example `seed-businesses-from-import`. That change would turn the JSON
@@ -556,14 +563,11 @@ claude -p "<prompt with the post text and the attachment paths>" \
    them and the human decides.
 2. **Area.** Are posts in BUHO always from Alameda del Río? `Bogota/` and `Soledad/` are
    expected to be excluded.
-3. **Google Maps.** `outscraper_extract` finds listed businesses, and this pipeline finds
-   informal ones. If they are combined, a separate step would read both outputs and match by
-   phone, as `src/outscraper_extract/SPEC.md` already states.
-4. **Videos and PDFs.** Skipped for now. If they turn out to matter: frames plus audio
+3. **Videos and PDFs.** Skipped for now. If they turn out to matter: frames plus audio
    transcription for videos, and text extraction for PDFs.
-5. **Thresholds** for schema discovery (3 businesses to suggest, 10 % for unused fields, 30 % to
+4. **Thresholds** for schema discovery (3 businesses to suggest, 10 % for unused fields, 30 % to
    suggest to the directory) are guesses. Adjust them once there are 50 or more businesses.
-6. **The 120-second window** is a guess based on BUHO. Tune it if review shows posts that should
+5. **The 120-second window** is a guess based on BUHO. Tune it if review shows posts that should
    have been split or merged.
 
 ## Tests
@@ -575,9 +579,9 @@ claude -p "<prompt with the post text and the attachment paths>" \
 - `tests/test_ingest.py`: export discovery, TSV annotations and extension-less references, kind
   detection without extension, unresolved references, orphan images with folder, ignored zip,
   duplicate files, determinism.
-- `tests/test_outscraper_extract.py`: see `src/outscraper_extract/SPEC.md`.
 
 Each new step brings its tests, written before the code, with synthetic data and a fake Claude.
+The Google Maps pipeline's tests (`tests/test_outscraper_*.py`) are listed in its own spec.
 Planned beyond the steps:
 
 - **Schema discovery:**

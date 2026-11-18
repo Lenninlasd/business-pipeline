@@ -1,29 +1,82 @@
-# Spec: Google Maps extraction for Alameda del Río
+# Spec: Google Maps pipeline for Alameda del Río
+
+This is one of two separate pipelines in this repository. The other, the WhatsApp/TSV
+pipeline, is specified in the root [SPEC.md](../../SPEC.md). They share the repository and the
+virtual environment, never code, input or output, and they are never merged here.
 
 ## Goal
 
-Produce a list of every business Google Maps lists inside Alameda del Río, Barranquilla, with
-enough data to contact it: name, category, phone, address, coordinates, opening hours and status.
+Find every business Google Maps lists inside Alameda del Río, Barranquilla, and describe each
+one with what Google Maps knows: contact data, opening hours and status, how likely it is to be
+still active, and what its photos show (offering, products and prices, delivery, payments).
+The result is handed to the directory repository, `alameda-dir`, which turns it into the
+directory's own shape (see "Handoff").
 
-It complements the WhatsApp/TSV pipeline (`business_pipeline`). That pipeline finds informal
-businesses that only advertise in neighbourhood chats. This extraction finds businesses that
-have a Google Maps listing. The two sources overlap only in part.
+## Steps
+
+Each step reads the previous one's output. All output goes to `output/outscraper/`, which git
+ignores.
+
+| # | Step | Module | Reads | Writes | Status |
+|---|---|---|---|---|---|
+| 1 | Search | `extract.py` | Outscraper `maps/search-v3` | `outscraper_places.jsonl`, `outscraper_outside.jsonl`, `outscraper_report.md`, `outscraper_raw.json` | done |
+| 2 | Activity | `activity.py` | step 1 + Outscraper reviews and photos | `outscraper_activity.jsonl`, `photos/`, `outscraper_activity_raw.json` | done |
+| 3 | Photos | `photos.py` | step 2 + Claude CLI | `outscraper_photo_facts.jsonl`, `outscraper_photo_report.md`, `cache/photos/` | done |
+
+Running step 1 again changes the set of places, so steps 2 and 3 must run again after it.
+
+## Handoff
+
+The pipeline's final output is two JSONL files and one image folder, all in
+`output/outscraper/`:
+
+| Artifact | Content | Spec |
+|---|---|---|
+| `outscraper_activity.jsonl` | One line per business inside the area: every Google Maps field, plus the newest review, 5 photos, `activity_score` (0-100) and `activity_reasons` | "Output schema" (step 1) and "Step 2: Activity" |
+| `outscraper_photo_facts.jsonl` | One line per business, same `google_id`s: `status`, `offering`, `products` with prices, hours, delivery, phones, links, `other_facts`, each with its photo, date and `stale` flags | "Step 3: Photos" |
+| `photos/<google_id>/<hash>.<ext>` | The images both files point to, in `photos[].file`, `photo_file` and `photo_files` | "Step 2: Activity" |
+
+Everything else is intermediate: raw API answers, `outscraper_places.jsonl` (a subset of
+`outscraper_activity.jsonl`), the outside list kept for review, the reports and the cache.
+
+For the consumer in `alameda-dir`:
+
+- **Join** the two files by `google_id`. Every place in `outscraper_activity.jsonl` has a line in
+  `outscraper_photo_facts.jsonl`, with `status` `ok`, `no_photos` or `failed`.
+- **Paths** are relative to this repository's root (`output/outscraper/photos/...`). Copy the
+  `photos/` folder along with the files, or rewrite the paths.
+- **Filter** with the typed fields: `activity_score`, `business_status`, `stale`,
+  `price_stale`, the dates. `activity_reasons`, `offering.text` and `evidence` are text for
+  people, in Spanish; do not parse them.
+- **Dates.** Every run is a snapshot: recency is counted from the run date, and `as_of`,
+  `last_review_date` and `photo_date` say how old each fact is.
+- **Shape.** This pipeline does not produce the directory's format. Mapping fields to the
+  directory API (`alameda-dir/openspec/specs/directory/spec.md`) is done in `alameda-dir`.
+- **Consent.** A phone number on a Google Maps listing or in a photo is not consent to be
+  listed. Treat every number as unauthorized, as the WhatsApp pipeline does.
+- **Photos are source material, not assets.** They belong to whoever uploaded them to Google
+  Maps, and Google's terms limit reuse. They may also show people. Publishing them in the
+  directory is not cleared.
 
 ## Non-goals
 
-- Merging with the pipeline's posts or businesses. If that is ever needed, it will be a separate
-  step that reads both outputs. Neither package imports the other.
-- Reviews, photos, emails or social profiles. Outscraper charges extra for these enrichments.
+- Merging with the WhatsApp/TSV pipeline. Decided on 2026-11-18: the two stay separate, and
+  each hands off its own output.
+- Producing the directory's format (`businesses.json`). That happens in `alameda-dir`.
+- Emails and social profiles through Outscraper's contacts enrichment (`domains_service`).
 - Keeping the data up to date. Each run is a snapshot.
 
 ## Constraints
 
-- Every place Outscraper returns is billed, repeats included. A run must never be repeated just
-  to change the filtering.
+- Every place, review and photo Outscraper returns is billed, repeats included. A run must never
+  be repeated just to change the filtering: every step has `--reuse-raw` or a cache.
+- Claude runs through the CLI with the subscription login, never API credits (root CLAUDE.md).
 - Results contain phone numbers, so output stays in `output/`, which git ignores.
 - Only the Python standard library, like the rest of the repository.
 
-## Area definition
+## Step 1: Search (`extract.py`)
+
+### Area definition
 
 OpenStreetMap has only a point for the neighbourhood (`node 8234797012`, 10.9949, −74.8439), not
 an outline. The bounding box comes from the OSM features named "Alameda del Río": Parque
@@ -36,7 +89,7 @@ They span roughly 10.987–10.998 N and 74.857–74.838 W. A margin is added on 
 
 The box is a rectangle, so it also covers a little of the neighbouring areas. `--bbox` overrides it.
 
-## Search strategy
+### Search strategy
 
 Google Maps has no "everything in this area" search. The script therefore makes one search per
 category:
@@ -51,7 +104,7 @@ category:
 - Every search is centred on `@10.994,-74.848,16z` (street-level zoom), with `language=es` and
   `region=CO`.
 
-## API contract
+### API contract
 
 | | |
 |---|---|
@@ -65,7 +118,7 @@ The parameter names come from Outscraper's official Python SDK, not from its API
 first real run confirms them. If Outscraper rejects one, it answers with an HTTP error, and the
 script stops and shows the first 500 characters of the response.
 
-## Processing rules
+### Processing rules
 
 1. **Raw first.** The full response is saved to `outscraper_raw.json` before any processing, as
    `{query: [place, ...]}`.
@@ -84,7 +137,7 @@ script stops and shows the first 500 characters of the response.
    them, and `business_status` shows which they are.
 6. **Order.** Places are sorted by category, then by name.
 
-## Output schema
+### Output schema
 
 `outscraper_places.jsonl` and `outscraper_outside.jsonl` hold one JSON object per line:
 
@@ -118,7 +171,7 @@ script stops and shows the first 500 characters of the response.
 - inside places counted by category;
 - queries that returned nothing.
 
-## Cost
+### Cost
 
 At most, a run bills the sum of the per-query limits: 62 × 100 = 6,200 with the defaults.
 Outscraper bills every returned place, including those outside the area, which are only
@@ -130,7 +183,7 @@ filtered out afterwards. The API has no parameter that restricts results to an a
 - `--limit`, `--categories` and per-category `:N` limits shrink a run;
 - `--reuse-raw` re-runs the filtering for free.
 
-## Known limits and open questions
+### Known limits and open questions
 
 - Google Maps returns at most about 120 results per search, whatever `limit` says. Categories
   with more listings than that are cut short. The fix would be narrower categories or several
@@ -140,9 +193,9 @@ filtered out afterwards. The API has no parameter that restricts results to an a
 - A business without a Google Maps listing cannot be found this way. The WhatsApp/TSV pipeline
   covers those.
 
-## Activity (`activity.py`)
+## Step 2: Activity (`activity.py`)
 
-A second, separate step estimates whether each place is still active. It reads
+This step estimates whether each place is still active. It reads
 `outscraper_places.jsonl` and, for each place, asks Outscraper by `google_id`:
 
 | | Reviews | Photos |
@@ -236,9 +289,9 @@ meses`. The text is for people. Code that filters should read `last_review_date`
 | `outscraper_activity.jsonl` | Every field of the place, plus `last_review_date`, `owner_answered_last_review`, `latest_photo_date`, `photos` (`url`, `date`, `street_view`, `file`), `activity_score` and `activity_reasons` (see "Reasons"). |
 | `photos/` | The downloaded photos. They may show people's faces: never copy them out of `output/`. |
 
-## Photos (`photos.py`)
+## Step 3: Photos (`photos.py`)
 
-A third step reads the downloaded photos with Claude. It reads `outscraper_activity.jsonl` and,
+This step reads the downloaded photos with Claude. It reads `outscraper_activity.jsonl` and,
 for each place with at least one photo that is not Street View and whose file exists, makes one
 call with all those photos (up to 5). Places without such photos make no call.
 

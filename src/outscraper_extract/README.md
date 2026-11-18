@@ -1,11 +1,19 @@
-# outscraper_extract
+# Google Maps pipeline (`outscraper_extract`)
 
-Lists the businesses Google Maps knows about in Alameda del Río (Barranquilla), through the
-[Outscraper](https://outscraper.com) API. It is a separate source from the WhatsApp/TSV pipeline
-in [`business_pipeline`](../../README.md): it does not read or write that pipeline's files, and
-nothing in the pipeline depends on it.
+Finds the businesses Google Maps lists in Alameda del Río (Barranquilla), through the
+[Outscraper](https://outscraper.com) API, then estimates whether each is still active and
+reads its photos with Claude. It is a separate pipeline from the WhatsApp/TSV one in
+[`business_pipeline`](../../README.md): neither reads the other's files, and they are never
+merged.
 
 What it does and why is in [SPEC.md](SPEC.md).
+
+```
+1 Search (Outscraper) ──> 2 Activity (reviews, photos) ──> 3 Photos (Claude) ──> handoff to alameda-dir
+```
+
+**Final output** (in `output/outscraper/`, joined by `google_id`): `outscraper_activity.jsonl`,
+`outscraper_photo_facts.jsonl` and the `photos/` folder. See [SPEC.md](SPEC.md#handoff).
 
 ## Setup
 
@@ -99,7 +107,7 @@ same folder. The raw answers hold reviewer names and the photos may show people:
 A third step reads the downloaded photos with Claude (products, prices, hours, delivery,
 contacts) and dates each fact with its photo, marking old prices as stale. It uses the Claude
 CLI with your subscription login, never API credits: check that `claude` then `/status` shows
-your Claude plan, not an API key. How it works is in [SPEC.md](SPEC.md#photos-photospy).
+your Claude plan, not an API key. How it works is in [SPEC.md](SPEC.md#step-3-photos-photospy).
 
 ```sh
 uv run python -m outscraper_extract.photos --dry-run                 # places, photos, Claude calls needed
