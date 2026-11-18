@@ -94,6 +94,23 @@ It writes `outscraper_activity_raw.json`, `outscraper_activity.jsonl` and `photo
 same folder. The raw answers hold reviewer names and the photos may show people: they stay in
 `output/`.
 
+## What do the photos show?
+
+A third step reads the downloaded photos with Claude (products, prices, hours, delivery,
+contacts) and dates each fact with its photo, marking old prices as stale. It uses the Claude
+CLI with your subscription login, never API credits: check that `claude` then `/status` shows
+your Claude plan, not an API key. How it works is in [SPEC.md](SPEC.md#photos-photospy).
+
+```sh
+uv run python -m outscraper_extract.photos --dry-run                 # places, photos, Claude calls needed
+uv run python -m outscraper_extract.photos --only <google_id>,<...>  # pilot on chosen places
+uv run python -m outscraper_extract.photos                           # all places (asks before, see CLAUDE.md)
+```
+
+It writes `outscraper_photo_facts.jsonl` and `outscraper_photo_report.md`, and caches every
+answer in `cache/photos/`. If the subscription's usage limit stops a run, run the same command
+later: it resumes from the cache.
+
 ## Output
 
 Everything goes to `output/outscraper/`. The repository ignores that folder because the

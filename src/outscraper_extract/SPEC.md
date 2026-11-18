@@ -236,6 +236,78 @@ meses`. The text is for people. Code that filters should read `last_review_date`
 | `outscraper_activity.jsonl` | Every field of the place, plus `last_review_date`, `owner_answered_last_review`, `latest_photo_date`, `photos` (`url`, `date`, `street_view`, `file`), `activity_score` and `activity_reasons` (see "Reasons"). |
 | `photos/` | The downloaded photos. They may show people's faces: never copy them out of `output/`. |
 
+## Photos (`photos.py`)
+
+A third step reads the downloaded photos with Claude. It reads `outscraper_activity.jsonl` and,
+for each place with at least one photo that is not Street View and whose file exists, makes one
+call with all those photos (up to 5). Places without such photos make no call.
+
+### Calling Claude
+
+It follows the pipeline's contract (root SPEC.md, "Calling Claude"), with stricter flags:
+
+```sh
+claude -p "<prompt>" --tools Read --allowedTools Read --strict-mcp-config \
+  --no-session-persistence --json-schema '<SCHEMA>' --output-format json --model sonnet
+```
+
+- `ANTHROPIC_API_KEY` is removed from the environment, so the CLI uses the subscription login.
+- `--tools Read` leaves Read as the only tool available, and `--strict-mcp-config` loads no MCP
+  server. Text in photos is third-party content: the prompt says never to follow it.
+- The answer is `structured_output` in the CLI's JSON, or else the JSON object in `result`.
+  Python validates it against `SCHEMA` (a subset of JSON Schema, checked without packages) and
+  checks that every cited photo number was sent. A failure is retried once, then the place is
+  reported as `failed`. After 3 failures in a row the run stops, as that is most likely the
+  subscription's usage limit; running it again resumes from the cache.
+- Cache: `cache/photos/<key>.json`, where the key is the SHA-256 of `PROMPT_VERSION`, the
+  model, the place's name and category, and the photos' content hashes in order. Failures are
+  never cached. Changing the prompt means bumping `PROMPT_VERSION`.
+
+### What Claude returns
+
+Each fact cites the number of the photo it comes from, in the prompt's order:
+
+| Field | Content |
+|---|---|
+| `photos[]` | `index`, `kind` (`menu`, `price_list`, `flyer`, `storefront`, `product`, `interior`, `other`), `has_text` |
+| `products[]` | `name`, `price_cop` (integer or null), `section`, `photo` |
+| `opening_hours` | `text` as written, `photo`; or null |
+| `delivery` | `offered`, `area`, `cost`, `photo`; or null |
+| `phones[]` | `raw` as written, `is_whatsapp`, `photo` |
+| `instagram`, `website` | `value`, `photo`; or null |
+| `has_physical_store` | true when a photo shows the premises, otherwise null |
+| `other_facts[]` | `label` (snake_case, English), `value`, `evidence`, `photo` |
+| `evidence`, `confidence` | literal quotes; 0 to 1 |
+
+Claude never invents a value, copies text in Spanish as written, and does not describe people.
+
+### Dates and staleness (Python, not Claude)
+
+Many photos are years old, so every fact gets its photo's `photo_file` and `photo_date`, and a
+`stale` flag by kind of fact:
+
+| Fact | Trusted while the photo is at most |
+|---|---|
+| Price (`price_stale`) | 365 days |
+| Product or service (`stale`) | 3 years |
+| Hours, delivery, phones, social links, other facts (`stale`) | 2 years |
+
+An undated photo counts as stale. `price_stale` is null when there is no price. Products with
+the same name, ignoring accents, case and spaces, are merged, keeping the one from the newest
+photo. `as_of` is the date of the newest photo sent. When this is merged with the WhatsApp
+pipeline, WhatsApp facts should win: they are recent.
+
+### Output
+
+| File | Content |
+|---|---|
+| `outscraper_photo_facts.jsonl` | One line per place: `google_id`, `name`, `category`, `status` (`ok`, `no_photos`, `failed`). When `ok`: `as_of`, `photos` (`file`, `date`, `kind`, `has_text`), the facts above with `photo_file`, `photo_date` and `stale`, `evidence`, `confidence`, `model`, `prompt_version`, `cache_key`, `cached`. When `failed`: `error`. |
+| `outscraper_photo_report.md` | Places read, from the cache, without photos and failed; coverage (photos with text, products, current and stale prices, hours, delivery, Instagram, physical store); photos by kind; failures. |
+| `cache/photos/` | Claude's validated answers. Phones in photos make them personal data. |
+
+`--dry-run` counts places, photos and cached answers without calling Claude. `--only` (google
+ids) and `--max-places` pilot on a few places.
+
 ## Tests
 
 `tests/test_outscraper_extract.py` covers dedup across queries, the bbox and address rules
@@ -243,5 +315,8 @@ meses`. The text is for people. Code that filters should read `last_review_date`
 `--categories`, the billing maximum, and async polling. `tests/test_outscraper_activity.py`
 covers date parsing, the score (full, empty, old, closed, the recency floor, the profile bonus and its rounding, the order and text of the reasons, Spanish ages), batching by `google_id`, picking
 the newest review and photos, Street View photos, file extensions, skipping files already
-downloaded, and failed downloads. Both inject a fake HTTP client, so they
-never call the API.
+downloaded, and failed downloads. `tests/test_outscraper_photos.py` covers schema
+validation, reading the CLI's answer, the CLI command (Read only, no API key), which photos are
+sent, the prompt, dating and staleness, merging duplicate products, the cache, the retry and
+places without photos. The first two inject a fake HTTP client and the third a fake Claude, so
+no test calls Outscraper or Claude.
